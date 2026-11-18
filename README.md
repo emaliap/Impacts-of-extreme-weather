@@ -3,14 +3,21 @@ EDS 223 HW4
 
 ## Repository purpose
 
-Contains the script **texas_blackout.qmd** for developing maps estimating the number of homes in Houston, Texas that lost power from 2021 severe winter storms, and investigating whether not these impacts were disproportionately felt. 
+Contains the script **texas_blackout.qmd** for developing maps estimating the number of homes in Houston, Texas that lost power from 2021 severe winter storms. 
 
 The analysis uses remotely-sensed night lights data, acquired from the Visible Infrared Imaging Radiometer Suite (VIIRS) onboard the Suomi satellite.
 
 ## Repository Structure
 
 ```{}
-
+.
+├── data
+│   ├── gis_osm_buildings_a_free_1.gpkg
+│   ├── gis_osm_roads_free_1.gpkg
+│   └── VNP46A1
+├── README.md
+├── texas_blackout.pdf
+└── texas_blackout.qmd
 ```
 
 ## Data access

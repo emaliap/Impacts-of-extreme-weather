@@ -24,24 +24,153 @@ v05_16 <- stars::read_stars(here::here("data", "VNP46A1", "VNP46A1.A2021047.h08v
 v06_7 <- stars::read_stars(here::here("data", "VNP46A1", "VNP46A1.A2021038.h08v06.001.2021039064329.tif"))
 v06_16 <- stars::read_stars(here::here("data", "VNP46A1", "VNP46A1.A2021047.h08v06.001.2021048091105.tif"))
 
-roads <- sf::st_read(here::here("data", "gis_osm_roads_free_1.gpkg")) |> 
+roads <- sf::st_read(here::here("data", "gis_osm_roads_free_1.gpkg"), query = "SELECT * FROM gis_osm_roads_free_1 WHERE fclass='motorway'") |> 
     clean_names()
 
-buildings <- sf::st_read(here::here("data", "gis_osm_buildings_a_free_1.gpkg")) |> 
+buildings <- sf::st_read(here::here("data", "gis_osm_buildings_a_free_1.gpkg"), query = "SELECT * FROM gis_osm_buildings_a_free_1 WHERE (type IS NULL AND name IS NULL) OR type in ('residential', 'apartments', 'house', 'static_caravan', 'detached')") |> 
     clean_names()
 ```
-
 
 ```{r}
 # Merge rasters for same date
-houston_07 <- st_mosaic(v05_7, v06_7) # 2021-02-07
-houston_16 <- st_mosaic(v05_16, v06_16) # 2021-02-16
+texas_before <- st_mosaic(v05_7, v06_7) # 2021-02-07 pre-storm
+texas_after <- st_mosaic(v05_16, v06_16) # 2021-02-16 post-storn
 ```
-
 
 ```{r}
 # Check if all dataframe's CRSs match
-st_crs(roads) == st_crs(buildings)
-st_crs(houston_07) == st_crs(houston_16)
-st_crs(houston_07) == st_crs(buildings)
+if(st_crs(roads) == st_crs(buildings)) {
+  print('roads and buildings CRS match')
+}else{
+  warning('roads and buildings CRS do not match')
+}
+
+if(st_crs(texas_before) == st_crs(texas_after)) {
+  print('texas_before and texas_after CRS match')
+}else{
+  warning('texas_before and texas_after CRS do not match')
+}
+
+if(st_crs(texas_before) == st_crs(roads)) {
+  print('texas_before and roads CRS match')
+}else{
+  warning('texas_before and roads CRS do not match')
+}
 ```
+
+
+## Map differences in night light intensities before and after the storms
+Post-storm, there is an increase in areas with lower light intensity. This is consistent with a blackout.  
+
+```{r}
+# Define Houston area 
+houston <- st_bbox(c(xmin = -96.5, ymin = 29, xmax = -94.5, ymax = 30.5), crs = st_crs(4326))
+
+# Crop to the Houston area 
+houston_before <- st_crop(texas_before, houston)
+houston_after <- st_crop(texas_after, houston)
+
+# Set unrealistic radiance values to NA
+houston_before[houston_before > 500] <- NA
+houston_after[houston_after > 500] <- NA
+
+# Stack and name the raster layers
+lights_comparison <- c(houston_before, houston_after)
+names(lights_comparison) <- c("Pre-storm (2021-02-07)", "Post-storm blackout (2021-02-16)")
+
+# Map night light intensities before and after the first two storms
+lights_comparison_map <- tm_shape(lights_comparison) +
+                        tm_raster(col.scale = tm_scale_continuous(values = "mako"),
+                                    col.legend = tm_legend(title = "Light intensity\n(nW cm^-2sr^-1)",
+                                                        title.size = 0.7,
+                                                        position = tm_pos_out('right'))) +
+                        tm_facets(as.layers = FALSE, nrow = 2, free.scales = FALSE) +
+                        tm_title("Houston, Texas night light intensities", 
+                                    fontface = "bold",
+                                    position = tm_pos_out("center", "top"))
+
+lights_comparison_map
+```
+
+
+## Identify blackout regions in Houston
+
+```{r}
+# Find the change in night lights intensity caused by the storm
+lights_diff <-  texas_before - texas_after
+
+# Create raster mask of the same resolution and extent
+blackouts <- lights_diff
+
+# Set all cells with difference less than 200 to NA, in order to keep all cells with a blackout
+blackouts[blackouts < 200] <- NA
+```
+
+```{r}
+# Crop the blackout mask to the Houston area
+blackouts_crop <- st_crop(blackouts, houston)
+
+# Convert from a raster to a vector and fix any invalid geometries
+blackouts_vector <- st_as_sf(blackouts_crop, merge = TRUE) |> 
+    st_make_valid()
+
+# Reproject blackouts_vector to EPSG:3083 CRS
+blackouts_reprojected <- st_transform(blackouts_vector, crs = 3083)
+```
+
+
+## Exclude highways from the Houston blackout regions
+
+```{r}
+# Create a 200m buffer around highways
+highway_buffer <- roads |> 
+    st_transform(crs = 3083) |> # Reproject roads to match CRS of blackouts_reprojected
+    st_buffer(dist = 200) |> 
+    st_union() # Combine geometries of highways
+
+# Find areas that experienced blackouts that are further than 200m from a highway
+far_blackouts <- st_difference(blackouts_reprojected, highway_buffer)
+```
+
+
+## Identify the number of homes likely impacted by blackouts
+
+```{r}
+# Reproject buildings to match CRS of blackouts_reprojected
+buildings_reprojected <- st_transform(buildings, crs = 3083)
+
+# Identify homes that overlap with areas that experienced blackouts
+home_blackouts <- st_intersection(far_blackouts, buildings_reprojected)
+
+# Convert blackout homes to points for mapping
+home_blackouts_points <- st_point_on_surface(home_blackouts)
+```
+
+
+## Map homes in Houston that lost power
+There appear to be clusters of homes that experienced blackouts towards the city center and at a town by the coast. To investigate why certain communities were more impacted than others, more research is needed.
+
+```{r}
+home_blackouts_map <- tm_shape(home_blackouts_points) +
+                    tm_symbols(fill = 'red', shape = 15, size = 0.05) +
+                    tm_title("Houston home blackouts from the 2021 storms", 
+                                fontface = "bold",
+                                position = tm_pos_out("center", "top")) +
+                    tm_basemap("Esri.WorldGrayCanvas") +
+                    tm_compass(position = c('left', 'top')) +
+                    tm_scalebar(position = c('left', 'bottom')) 
+
+home_blackouts_map
+```
+
+
+## Estimate of the number of homes in Houston that lost power
+
+```{r}
+cat("The number of homes in Houston that lost power from 2021 storms:  "); print(length(unique(home_blackouts$osm_id)))
+```
+
+
+## Analysis reflection
+
+The 2021 extreme storms in Texas caused widespread blackout events, leaving many homes without power. These maps display clusters of homes and neighborhoods in the metropoliton center that were most impacted by the blackouts on Febuary 16th, 2021. These maps do not include information on why these communities were more impacted than others. Therefore, more research is needed to look into why the blackouts were disproportionately felt. Even though the extreme weather events in Texas spanned the entire month of February, this analysis includes data from only two days. This limitation is due to high cloud cover obscuring multiple days of remote sensing data.
